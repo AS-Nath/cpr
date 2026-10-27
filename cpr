@@ -1,0 +1,155 @@
+
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Default compiler configuration
+CXX="g++"
+
+CXXFLAGS=(
+    -std=gnu++20
+    -O2
+    -pipe
+    -Wall
+    -Wextra
+    -Wshadow
+)
+
+TIMEOUT=2
+
+# Load user configuration
+CONFIG="$HOME/.config/cpr/config.sh"
+
+if [[ -f "$CONFIG" ]]; then
+    source "$CONFIG"
+fi
+
+# Print CPR messages to stderr, leaving stdout for the solution
+log()
+{
+    printf '%s\n' "$*" >&2
+}
+
+usage()
+{
+    log "Usage: cpr [-d] [-t seconds] <source.cpp> [input.txt]"
+    log "Use -t 0 to disable the timeout."
+}
+
+# Parse arguments
+DEBUG=0
+
+while getopts ":dt:" opt; do
+    case "$opt" in
+        d)
+            DEBUG=1
+            ;;
+        t)
+            TIMEOUT="$OPTARG"
+            ;;
+        :)
+            log "Error: Option -$OPTARG requires an argument."
+            usage
+            exit 2
+            ;;
+        \?)
+            log "Error: Unknown option -$OPTARG."
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+# Validate arguments
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    usage
+    exit 2
+fi
+
+SOURCE="$1"
+INPUT="${2:-}"
+
+# Validate timeout
+if [[ ! "$TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    log "Error: Timeout must be a non-negative number of seconds."
+    exit 2
+fi
+
+# Validate source and input
+if [[ ! -f "$SOURCE" ]]; then
+    log "Error: Source file '$SOURCE' not found."
+    exit 1
+fi
+
+if [[ -n "$INPUT" && ! -f "$INPUT" ]]; then
+    log "Error: Input file '$INPUT' not found."
+    exit 1
+fi
+
+if ! command -v timeout >/dev/null 2>&1; then
+    log "Error: 'timeout' command not found. Install coreutils."
+    exit 1
+fi
+
+# Debug mode
+if [[ "$DEBUG" -eq 1 ]]; then
+    CXXFLAGS+=(-O0 -g)
+fi
+
+# Construct executable path
+SOURCE_DIR="$(dirname -- "$SOURCE")"
+SOURCE_BASE="$(basename -- "$SOURCE")"
+EXECUTABLE="$SOURCE_DIR/${SOURCE_BASE%.*}"
+
+# Compile
+log "Compiling: $SOURCE"
+log "Compiler:  $CXX"
+
+if ! "$CXX" "${CXXFLAGS[@]}" "$SOURCE" -o "$EXECUTABLE"; then
+    log "Compilation failed."
+    exit 1
+fi
+
+log "Compilation successful."
+log ""
+log "Executing: $EXECUTABLE"
+
+if [[ "$TIMEOUT" =~ ^0+([.]0+)?$ ]]; then
+    log "Timeout:   disabled"
+else
+    log "Timeout:   ${TIMEOUT}s"
+fi
+
+log "--------------------"
+
+# Run with an optional timeout
+run_program()
+{
+    if [[ "$TIMEOUT" =~ ^0+([.]0+)?$ ]]; then
+        "$EXECUTABLE"
+    else
+        timeout --signal=TERM --kill-after=1s \
+            "${TIMEOUT}s" "$EXECUTABLE"
+    fi
+}
+
+STATUS=0
+
+if [[ -n "$INPUT" ]]; then
+    run_program < "$INPUT" || STATUS=$?
+else
+    run_program || STATUS=$?
+fi
+
+log ""
+log "--------------------"
+
+if [[ "$STATUS" -eq 124 && ! "$TIMEOUT" =~ ^0+([.]0+)?$ ]]; then
+    log "Execution timed out after ${TIMEOUT}s."
+else
+    log "Execution finished (exit code $STATUS)."
+fi
+
+exit "$STATUS"
